@@ -48,7 +48,7 @@
     "provider": "deepseek",
     "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com",
-    "api_key": "sk-91cbe5e0d0b44351ab10c33c6790811e",
+    "api_key": "",
     "system_prompt": "你是企业微信群聊客服机器人。只回复外部客户消息。回复开头自然，不要自称机器人，不要输出“@微信”等内部标识。语气友好、专业、简洁，优先直接回答客户问题，不超过150字。不知道答案时，引导客户联系人工客服。"
   }
 }
