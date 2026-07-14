@@ -1,0 +1,54 @@
+{
+  "check_interval_seconds": 3,
+  "debug_capture_enabled": true,
+  "debug_capture_interval_seconds": 15,
+  "wecom_process_name": "企业微信",
+  "wecom_window_title_keywords": [
+    "企业微信",
+    "WeCom"
+  ],
+  "wecom_process_executables": [
+    "WXWork.exe",
+    "WXWorkWeb.exe",
+    "WeCom.exe"
+  ],
+  "col2_start_ratio": 0.065,
+  "col2_width_ratio": 0.235,
+  "red_dot_min_x_ratio": 0.0,
+  "target_chat_names": [
+    "ai测试群聊1",
+    "ai测试群聊2"
+  ],
+  "console_debug_ocr": true,
+  "chat_area_top_ratio": 0.1,
+  "chat_area_bottom_ratio": 0.77,
+  "manual_window_region": [],
+  "send_enabled": true,
+  "require_external_marker": true,
+  "memory_enabled": true,
+  "memory_history_limit": 12,
+  "memory_store_ai_replies": true,
+  "external_marker_keywords": [
+    "@微信",
+    "微信"
+  ],
+  "logging": {
+    "log_file": "logs/monitor.log",
+    "screenshot_dir": "logs/screenshots"
+  },
+  "ocr": {
+    "download_enabled": true
+  },
+  "smart_sheet": {
+    "enabled": false,
+    "docid": "",
+    "sheet_id": ""
+  },
+  "ai": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "base_url": "https://api.deepseek.com",
+    "api_key": "sk-91cbe5e0d0b44351ab10c33c6790811e",
+    "system_prompt": "你是企业微信群聊客服机器人。只回复外部客户消息。回复开头自然，不要自称机器人，不要输出“@微信”等内部标识。语气友好、专业、简洁，优先直接回答客户问题，不超过150字。不知道答案时，引导客户联系人工客服。"
+  }
+}
