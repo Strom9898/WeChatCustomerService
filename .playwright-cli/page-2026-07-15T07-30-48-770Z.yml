@@ -1,0 +1,117 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: W
+      - generic [ref=e6]:
+        - strong [ref=e7]: 企业微信助手
+        - generic [ref=e8]: 本地管理台
+    - generic [ref=e9]:
+      - paragraph [ref=e10]: 工作区
+      - navigation [ref=e11]:
+        - button "检测配置" [ref=e12] [cursor=pointer]
+        - button "回复策略" [active] [ref=e13] [cursor=pointer]
+        - button "群聊记录" [ref=e14] [cursor=pointer]
+        - button "画面校准" [ref=e15] [cursor=pointer]
+        - button "运行日志" [ref=e16] [cursor=pointer]
+    - generic [ref=e17]: 所有设置仅保存到本机项目目录。网页服务仅监听本机地址。
+  - generic [ref=e18]:
+    - banner [ref=e19]:
+      - generic [ref=e20]: 本地服务 / 管理后台
+      - generic [ref=e21]: 助手未运行
+    - main [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - heading "运行控制台" [level=1] [ref=e27]
+          - paragraph [ref=e28]: 管理群聊检测范围、回复策略和本机自动化进程。
+        - generic [ref=e29]:
+          - button "保存配置" [ref=e30] [cursor=pointer]
+          - button "启动助手" [ref=e31] [cursor=pointer]
+          - button "停止助手" [disabled] [ref=e32]
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - text: 当前监控群
+          - generic [ref=e35]: ai测试群聊2
+        - generic [ref=e36]:
+          - text: 自动发送
+          - generic [ref=e37]: 已开启
+        - generic [ref=e38]:
+          - text: 外部联系人过滤
+          - generic [ref=e39]: 已开启
+        - generic [ref=e40]:
+          - text: 模型密钥
+          - generic [ref=e41]: 已配置
+      - generic [ref=e42]:
+        - generic [ref=e76]:
+          - generic [ref=e77]:
+            - generic [ref=e78]:
+              - heading "回复策略" [level=2] [ref=e79]
+              - paragraph [ref=e80]: 检索仲裁法规和相似客服话术，再结合该群案件档案生成回复。
+            - generic [ref=e81]: 已配置密钥
+          - generic [ref=e82]:
+            - generic [ref=e83]:
+              - generic [ref=e84]:
+                - generic [ref=e85]:
+                  - strong [ref=e86]: 自动发送
+                  - generic [ref=e87]: 关闭时仅生成回复和记录日志，不会向企业微信发送。
+                - checkbox [checked] [ref=e88]
+              - generic [ref=e89]:
+                - generic [ref=e90]:
+                  - strong [ref=e91]: 仅外部联系人
+                  - generic [ref=e92]: 只处理带外部联系人标识的消息。
+                - checkbox [checked] [ref=e93]
+              - generic [ref=e94]:
+                - generic [ref=e95]:
+                  - strong [ref=e96]: 拟人化分段回复
+                  - generic [ref=e97]: 按照真人客服节奏，把承接、解释和下一步拆成短消息发送。
+                - checkbox [checked] [ref=e98]
+              - generic [ref=e99]:
+                - generic [ref=e100]:
+                  - strong [ref=e101]: 保存群聊记忆
+                  - generic [ref=e102]: 将客户消息保存在本机，并在下次同群回复时作为上下文。
+                - checkbox [checked] [ref=e103]
+              - generic [ref=e104]:
+                - generic [ref=e105]:
+                  - strong [ref=e106]: 保存助手回复
+                  - generic [ref=e107]: 把已生成的回复一并保存，让后续回答保持上下文连贯。
+                - checkbox [checked] [ref=e108]
+              - generic [ref=e109]:
+                - generic [ref=e110]:
+                  - strong [ref=e111]: 输出识别文本
+                  - generic [ref=e112]: 在运行日志中显示最新气泡的原始识别结果。
+                - checkbox [checked] [ref=e113]
+            - generic [ref=e114]:
+              - generic [ref=e115]:
+                - text: 携带历史条数
+                - spinbutton "携带历史条数" [ref=e116]: "12"
+              - generic [ref=e117]:
+                - text: 每次最多发送几条
+                - spinbutton "每次最多发送几条" [ref=e118]: "3"
+              - generic [ref=e119]:
+                - text: 分段发送间隔（秒）
+                - spinbutton "分段发送间隔（秒）" [ref=e120]: "1.1"
+              - generic [ref=e121]:
+                - text: 模型名称
+                - textbox "模型名称" [ref=e122]: deepseek-v4-flash
+              - generic [ref=e123]:
+                - text: 接口地址
+                - textbox "接口地址" [ref=e124]: https://api.deepseek.com
+              - generic [ref=e125]:
+                - text: 新的 API 密钥（留空保留原密钥）
+                - textbox "新的 API 密钥（留空保留原密钥）" [ref=e126]
+              - generic [ref=e127]:
+                - text: 回复补充规则
+                - textbox "回复补充规则" [ref=e128]: 你是企业微信群聊客服机器人。只回复外部客户消息。回复开头自然，不要自称机器人，不要输出“@微信”等内部标识。语气友好、专业、简洁，优先直接回答客户问题，不超过150字。不知道答案时，引导客户联系人工客服。
+        - complementary [ref=e59]:
+          - heading "运行状态" [level=2] [ref=e60]
+          - generic [ref=e61]: 本机助手未运行
+          - paragraph [ref=e64]: 当前未启动。保存配置后点击“启动助手”。
+          - generic [ref=e65]:
+            - generic [ref=e66]:
+              - generic [ref=e67]: "01"
+              - generic [ref=e68]: 先保存配置，再启动助手。
+            - generic [ref=e69]:
+              - generic [ref=e70]: "02"
+              - generic [ref=e71]: 保持企业微信窗口可见，避免被遮挡。
+            - generic [ref=e72]:
+              - generic [ref=e73]: "03"
+              - generic [ref=e74]: 需要排查时，在“画面校准”开启截图。

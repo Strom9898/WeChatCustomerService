@@ -25,6 +25,7 @@ from typing import Optional, Tuple, List
 from PIL import Image, ImageChops, ImageEnhance
 from mano.executor import ActionExecutor
 from conversation_store import ConversationStore
+from legal_service import ArbitrationService, ARBITRATION_SYSTEM_PROMPT
 
 
 def _configure_console_encoding():
@@ -83,7 +84,7 @@ class WeComAssistant:
         # AI 配置
         ai_cfg = self.config.get("ai", {})
         self.ai_provider = ai_cfg.get("provider", "deepseek")
-        self.ai_model = ai_cfg.get("model", "deepseek-chat")
+        self.ai_model = ai_cfg.get("model", "deepseek-v4-flash")
         self.ai_base_url = ai_cfg.get("base_url", "https://api.deepseek.com").rstrip("/v1")
         self.ai_key = ai_cfg.get("api_key", "")
         self.system_prompt = ai_cfg.get("system_prompt",
@@ -101,7 +102,13 @@ class WeComAssistant:
         self.memory_enabled = self.config.get("memory_enabled", True)
         self.memory_history_limit = max(1, min(int(self.config.get("memory_history_limit", 12)), 50))
         self.memory_store_ai_replies = self.config.get("memory_store_ai_replies", True)
+        self.assistant_mode = self.config.get("assistant_mode", "arbitration")
+        self.humanized_reply_enabled = self.config.get("humanized_reply_enabled", True)
+        self.ai_reply_attempts = max(1, min(int(self.config.get("ai_reply_attempts", 3)), 5))
+        self.max_reply_segments = max(1, min(int(self.config.get("max_reply_segments", 3)), 3))
+        self.reply_segment_delay = max(0.3, min(float(self.config.get("reply_segment_delay_seconds", 1.1)), 5.0))
         self.conversations = ConversationStore()
+        self.arbitration_service = ArbitrationService()
         repaired_records = self.conversations.repair_saved_messages()
         self._last_reply_times = {}
 
@@ -145,6 +152,10 @@ class WeComAssistant:
             "memory_enabled": True,
             "memory_history_limit": 12,
             "memory_store_ai_replies": True,
+            "assistant_mode": "arbitration",
+            "humanized_reply_enabled": True,
+            "max_reply_segments": 3,
+            "reply_segment_delay_seconds": 1.1,
             "logging": {"log_file": "logs/monitor.log"},
             "ai": {}
         }
@@ -207,7 +218,8 @@ class WeComAssistant:
     def _log(self, level: str, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[{ts}] [{level}] {msg}")
-        getattr(self.log, level.lower(), self.log.info)(msg)
+        method_name = "warning" if level.upper() in {"WARN", "WARNING"} else level.lower()
+        getattr(self.log, method_name, self.log.info)(msg)
 
     # ─── 窗口管理 ──────────────────────────────────
 
@@ -615,32 +627,73 @@ class WeComAssistant:
             return False
 
     def _ocr_image(self, img: Image.Image) -> str:
-        """提取图片文字（带图像增强预处理）"""
+        """Run complementary OCR preprocessing and keep the strongest result."""
         if not self._init_ocr():
             return ""
         try:
-            # 图像增强：聊天气泡文字较小，先放大、增强对比度和锐度。
-            w, h = img.size
-            if h < 260:
-                scale = 320.0 / h
-                img = img.resize((int(w * scale), 320), Image.LANCZOS)
-            
-            # 提高对比度和边缘清晰度，减少“火锅店”被读成“火 店”的情况。
-            from PIL import ImageEnhance
-            img = ImageEnhance.Contrast(img).enhance(1.8)
-            img = ImageEnhance.Sharpness(img).enhance(2.0)
-            
-            # EasyOCR 需要 numpy array
+            from PIL import ImageOps
             import numpy as np
-            img_np = np.array(img)
-            results = self.ocr.readtext(
-                img_np, contrast_ths=0.05, adjust_contrast=0.7, mag_ratio=1.5
+
+            w, h = img.size
+            scale = 4 if h < 100 else 2
+            grayscale = ImageOps.grayscale(img).resize(
+                (w * scale, h * scale), Image.LANCZOS
             )
-            texts = [text.strip() for _, text, conf in results if conf > 0.3]
-            return "\n".join(texts)
+            padding = max(20, int(8 * scale))
+            grayscale = ImageOps.expand(grayscale, padding, fill=255)
+            threshold = grayscale.point(lambda value: 0 if value < 175 else 255)
+
+            candidates = []
+            for prepared in (threshold, grayscale):
+                results = self.ocr.readtext(
+                    np.array(prepared), contrast_ths=0.03, adjust_contrast=0.7,
+                    text_threshold=0.45, low_text=0.25, paragraph=False,
+                )
+                accepted = [
+                    (str(text).strip(), float(confidence))
+                    for _, text, confidence in results
+                    if str(text).strip() and float(confidence) >= 0.015
+                ]
+                if accepted:
+                    text = "\n".join(item[0] for item in accepted)
+                    score = sum(max(confidence, 0.01) * len(text) for text, confidence in accepted)
+                    candidates.append((score, text))
+            return max(candidates, default=(0.0, ""), key=lambda item: item[0])[1]
         except Exception as e:
             self._log("WARN", f"⚠️ OCR 识别失败: {e}")
             return ""
+
+    @staticmethod
+    def _normalize_ocr_text(text: str) -> str:
+        """Fix a small set of high-confidence EasyOCR confusions seen in chat bubbles."""
+        replacements = {
+            "聊夭记录": "聊天记录",
+            "钓聊天记录": "的聊天记录",
+            "兵有微信": "只有微信",
+            "设签合同": "没签合同",
+            "宰不到": "拿不到",
+            "禽职": "离职",
+            "注卅地": "注册地",
+            "己经": "已经",
+        }
+        normalized = str(text)
+        for incorrect, correct in replacements.items():
+            normalized = normalized.replace(incorrect, correct)
+        return normalized
+
+    def _latest_messages_from_session(self, session_img: Image.Image):
+        """Crop the conversation area and return its latest consecutive bubble batch."""
+        col3_w, col3_h = session_img.size
+        chat_top = int(col3_h * self.chat_area_top_ratio)
+        chat_bottom = int(col3_h * self.chat_area_bottom_ratio)
+        chat_right = max(1, col3_w - 162)
+        chat_area = session_img.crop((0, chat_top, chat_right, chat_bottom))
+        return self._extract_message_batch(chat_area)
+
+    def _latest_message_from_session(self, session_img: Image.Image):
+        """Compatibility helper returning only the bottom bubble."""
+        batch = self._latest_messages_from_session(session_img)
+        return batch[-1] if batch else (None, False, False)
 
     @staticmethod
     def _normalize_chat_name(name: str) -> str:
@@ -715,64 +768,88 @@ class WeComAssistant:
 
     # ─── AI 回复 ───────────────────────────────────
 
-    def _generate_reply(self, ocr_text: str, chat_name: str = "当前会话") -> Optional[str]:
-        """调用 AI 生成回复（带知识库检索）"""
+    def _generate_reply(self, ocr_text: str, chat_name: str = "当前会话",
+                        current_messages: Optional[List[str]] = None) -> Optional[dict]:
+        """Generate humanized arbitration replies and update the group case profile."""
         if not self.ai_key:
             self._log("WARN", "⚠️ 未配置 API Key，无法生成回复")
             return None
 
         try:
-            # 检索知识库
-            kb_context = ""
-            try:
-                if not hasattr(self, '_kb') or not self._kb:
-                    from scripts.kb_client import KnowledgeBase
-                    self._kb = KnowledgeBase()
-                    self._kb.load()
-                if self._kb.is_ready():
-                    kb_context = self._kb.format_context(ocr_text)
-                    if kb_context:
-                        self._log("INFO", "📚 知识库检索到相关片段")
-                    else:
-                        self._log("DEBUG", "知识库未找到相关片段，使用模型直接回答")
-            except Exception as e:
-                self._log("WARN", f"⚠️ 知识库不可用: {e}")
-
-            # 组装 system prompt + 知识库内容
-            system_content = self.system_prompt
-            if kb_context:
-                system_content += kb_context
-
-            messages = [{"role": "system", "content": system_content}]
+            profile = self.arbitration_service.get_profile(chat_name)
+            history = []
             if self.memory_enabled:
                 history = self.conversations.messages(chat_name, self.memory_history_limit)
-                if history and history[-1].get("role") == "user" and history[-1].get("content") == ocr_text:
-                    history = history[:-1]
-                if history:
-                    messages.extend({"role": item["role"], "content": item["content"]} for item in history)
-                    self._log("INFO", f"🧠 已加载 {chat_name} 的 {len(history)} 条本地历史消息")
-            messages.append({"role": "user", "content":
-                f"客户的新问题：\n\n{ocr_text}\n\n直接回复客户问题。不要自我介绍，不要开场白，不要输出「@微信」等内部术语。不超过150字。"})
+                for current in reversed(current_messages or [ocr_text]):
+                    if (history and history[-1].get("role") == "user"
+                            and history[-1].get("content") == current):
+                        history.pop()
 
-            resp = requests.post(
-                f"{self.ai_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.ai_key}",
-                         "Content-Type": "application/json"},
-                json={
-                    "model": self.ai_model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 200,
-                },
-                timeout=20
+            retrieval_query = "\n".join(
+                [item.get("content", "") for item in history[-4:] if item.get("role") == "user"] + [ocr_text]
             )
+            knowledge = self.arbitration_service.retrieve_knowledge(retrieval_query)
+            examples = self.arbitration_service.retrieve_examples(retrieval_query)
+            if knowledge:
+                self._log("INFO", f"📚 仲裁知识检索到 {len(knowledge)} 条依据")
+            if examples:
+                self._log("INFO", f"💬 检索到 {len(examples)} 组相似客服话术")
 
-            if resp.status_code == 200:
-                reply = resp.json()["choices"][0]["message"]["content"].strip()
-                return reply
-            else:
-                self._log("WARN", f"⚠️ AI API 失败: {resp.status_code} {resp.text[:200]}")
-                return None
+            system_content = ARBITRATION_SYSTEM_PROMPT
+            if self.system_prompt:
+                system_content += f"\n后台补充要求：{self.system_prompt}"
+            messages = [{"role": "system", "content": system_content}]
+            if history:
+                messages.extend({"role": item["role"], "content": item["content"]} for item in history)
+                self._log("INFO", f"🧠 已加载 {chat_name} 的 {len(history)} 条本地历史消息")
+
+            request_context = {
+                "当前群聊案件档案": profile or {"procedure_type": "待确认"},
+                "本轮客户消息": ocr_text,
+                "检索到的法律知识": self.arbitration_service.format_knowledge(knowledge),
+                "相似客服表达范例": self.arbitration_service.format_examples(examples),
+                "要求": "范例只用于学习语气和节奏，法律结论以知识和实际案情为准。更新案件档案并输出自然短回复。",
+            }
+            messages.append({
+                "role": "user",
+                "content": json.dumps(request_context, ensure_ascii=False, indent=2),
+            })
+
+            segment_limit = self.max_reply_segments if self.humanized_reply_enabled else 1
+            for attempt in range(1, self.ai_reply_attempts + 1):
+                try:
+                    resp = requests.post(
+                        f"{self.ai_base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.ai_key}",
+                                 "Content-Type": "application/json"},
+                        json={
+                            "model": self.ai_model,
+                            "messages": messages,
+                            "response_format": {"type": "json_object"},
+                            "temperature": 0.35 if attempt > 1 else 0.45,
+                            "max_tokens": 900,
+                        },
+                        timeout=35
+                    )
+                    if resp.status_code != 200:
+                        self._log("WARN", f"⚠️ AI API 第 {attempt}/{self.ai_reply_attempts} 次失败: {resp.status_code} {resp.text[:160]}")
+                    else:
+                        raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+                        package = self.arbitration_service.parse_model_response(raw, segment_limit)
+                        if package["reply_segments"]:
+                            profile = self.arbitration_service.update_profile(chat_name, package.get("case_update", {}))
+                            self._log("INFO", f"📁 案件档案已更新: {profile.get('procedure_type', '待确认')} / {profile.get('stage', '阶段待确认')}")
+                            return package
+                        self._log(
+                            "WARN",
+                            f"⚠️ 模型第 {attempt}/{self.ai_reply_attempts} 次未返回有效客服回复（内容长度 {len(raw)}）",
+                        )
+                except (requests.RequestException, KeyError, ValueError, TypeError) as error:
+                    self._log("WARN", f"⚠️ AI 第 {attempt}/{self.ai_reply_attempts} 次调用异常: {error}")
+                if attempt < self.ai_reply_attempts:
+                    self._log("INFO", "🔄 正在自动重试本条客户消息")
+                    time.sleep(min(2 * attempt, 4))
+            return None
 
         except Exception as e:
             self._log("WARN", f"⚠️ AI 回复异常: {e}")
@@ -847,10 +924,113 @@ class WeComAssistant:
 
     # ─── 提取底部完整灰色气泡+昵称区域 ───────────
 
+    def _extract_message_batch(self, img):
+        """Return all consecutive customer bubbles after the latest assistant bubble."""
+        try:
+            import cv2
+            import numpy as np
+
+            rgb = np.array(img.convert("RGB"))
+            red, green, blue = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+            channel_gap = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+            masks = (
+                (((red >= 205) & (red <= 242) & (green >= 205) & (green <= 245)
+                  & (blue >= 205) & (blue <= 248) & (channel_gap <= 18)).astype("uint8"), False),
+                (((red >= 170) & (red <= 230) & (green >= 210) & (green <= 248)
+                  & (blue >= 238) & (blue <= 255)
+                  & (blue.astype("int16") - red.astype("int16") >= 25)).astype("uint8"), True),
+            )
+            candidates = []
+            for mask, is_blue in masks:
+                count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+                for index in range(1, count):
+                    x, y, width, height, area = [int(value) for value in stats[index]]
+                    fill_ratio = area / max(width * height, 1)
+                    if width >= 20 and height >= 18 and area >= 250 and fill_ratio >= 0.35:
+                        candidates.append((y, x, width, height, is_blue))
+            if not candidates:
+                fallback = self._extract_bottom_message(img)
+                return [fallback] if fallback[0] is not None else []
+
+            ordered = sorted(candidates, key=lambda item: item[0])
+            latest = ordered[-1]
+            if latest[4]:
+                selected = [latest]
+            else:
+                selected = []
+                next_top = None
+                max_gap = max(110, int(img.height * 0.18))
+                for candidate in reversed(ordered):
+                    y, _, _, height, is_blue = candidate
+                    if is_blue:
+                        break
+                    if next_top is not None and next_top - (y + height) > max_gap:
+                        break
+                    selected.append(candidate)
+                    next_top = y
+                selected.reverse()
+
+            result = []
+            for y, x, width, height, is_blue in selected[-5:]:
+                bubble = img.crop((max(0, x - 2), max(0, y - 2),
+                                   min(img.width, x + width + 2), min(img.height, y + height + 2)))
+                label_right = min(img.width, x + max(width + 30, 180))
+                label = img.crop((max(0, x - 5), max(0, y - 38), label_right, y))
+                external = (not is_blue) and self._has_green_badge(label)
+                result.append((bubble, is_blue, external))
+            summary = ", ".join("蓝" if item[1] else "灰" for item in result)
+            self._log("DEBUG", f"连续气泡批次: {len(result)} 个 ({summary})")
+            return result
+        except Exception as error:
+            self._log("WARN", f"⚠️ 连续气泡定位失败，使用底部单气泡: {error}")
+            fallback = self._extract_bottom_message(img)
+            return [fallback] if fallback[0] is not None else []
+
     def _extract_bottom_message(self, img):
-        """找到底部最后一个气泡，完整截取气泡+上方50像素昵称区域。
-        返回 (裁剪图, 是否是蓝色气泡)
-        """
+        """找到最底部的灰色/蓝色气泡，并且只截取气泡正文。"""
+        try:
+            import cv2
+            import numpy as np
+
+            rgb = np.array(img.convert("RGB"))
+            red, green, blue = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+            channel_gap = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+
+            # 企业微信当前主题：客户气泡 #e4e7eb，助手气泡 #c9e7ff。
+            gray_mask = (
+                (red >= 205) & (red <= 242) &
+                (green >= 205) & (green <= 245) &
+                (blue >= 205) & (blue <= 248) &
+                (channel_gap <= 18)
+            ).astype("uint8")
+            blue_mask = (
+                (red >= 170) & (red <= 230) &
+                (green >= 210) & (green <= 248) &
+                (blue >= 238) & (blue <= 255) &
+                (blue.astype("int16") - red.astype("int16") >= 25)
+            ).astype("uint8")
+
+            candidates = []
+            for mask, is_blue in ((gray_mask, False), (blue_mask, True)):
+                count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+                for index in range(1, count):
+                    x, y, width, height, area = [int(value) for value in stats[index]]
+                    fill_ratio = area / max(width * height, 1)
+                    if width >= 20 and height >= 18 and area >= 250 and fill_ratio >= 0.35:
+                        candidates.append((y + height, x, y, width, height, is_blue))
+
+            if candidates:
+                _, x, y, width, height, is_blue = max(candidates, key=lambda item: item[0])
+                bubble = img.crop((max(0, x - 2), max(0, y - 2), min(img.width, x + width + 2), min(img.height, y + height + 2)))
+                label_right = min(img.width, x + max(width + 30, 180))
+                label = img.crop((max(0, x - 5), max(0, y - 38), label_right, y))
+                has_external_label = (not is_blue) and self._has_green_badge(label)
+                self._log("DEBUG", f"底部气泡: {'🟦蓝泡' if is_blue else '⬜灰泡'} ({x},{y},{width},{height})")
+                return bubble, is_blue, has_external_label
+        except Exception as e:
+            self._log("WARN", f"⚠️ 气泡色块定位失败，使用兼容模式: {e}")
+
+        # 兼容旧主题：找不到稳定色块时，继续使用按内容行反查的方式。
         pixels = img.load()
         w, h = img.size
         
@@ -867,7 +1047,7 @@ class WeComAssistant:
                 break
         
         if last_content_y < 0:
-            return None, False
+            return None, False, False
         
         # 第二步：从底部往上找气泡顶部（消息间隔=连续5行以上基本空白）
         blank_streak = 0
@@ -920,7 +1100,34 @@ class WeComAssistant:
         
         self._log("DEBUG", f"底部消息: 右侧蓝{blue_ratio:.1%} 区域({crop_top}-{crop_bottom}) {'🟦蓝泡' if is_blue else '⬜灰泡'}")
         
-        return msg_img, is_blue
+        return msg_img, is_blue, self._has_green_badge(msg_img)
+
+    @staticmethod
+    def _correct_single_question_mark(text: str, bubble_img: Image.Image) -> str:
+        """EasyOCR sometimes reads a lone question mark as the digit 2."""
+        normalized = text.strip()
+        if normalized not in {"2", "Z", "z"} or bubble_img.width > 90:
+            return text
+        try:
+            import cv2
+            import numpy as np
+
+            gray = cv2.cvtColor(np.array(bubble_img.convert("RGB")), cv2.COLOR_RGB2GRAY)
+            ink = (gray < 150).astype("uint8")
+            count, _, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
+            parts = []
+            for index in range(1, count):
+                x, y, width, height, area = [int(value) for value in stats[index]]
+                if area >= 2:
+                    parts.append((x, y, width, height, area))
+            parts.sort(key=lambda part: part[1])
+            if len(parts) >= 2:
+                upper, lower = parts[-2], parts[-1]
+                if lower[1] > upper[1] + upper[3] - 1 and lower[4] <= upper[4] * 0.6:
+                    return "?"
+        except Exception:
+            pass
+        return text
 
     # ─── 检测 @微信 绿色标识 ──────────────────────
 
@@ -1046,32 +1253,54 @@ class WeComAssistant:
                 self._save_debug_session_screenshot(session_img)
 
                 # ═══ 6. 提取底部最新消息区域 ═══
-                col3_w, col3_h = session_img.size
-                # 按当前窗口高度裁剪聊天区，避开顶部标题和底部输入框。
-                chat_top = int(col3_h * self.chat_area_top_ratio)
-                chat_bottom = int(col3_h * self.chat_area_bottom_ratio)
-                chat_right = max(1, col3_w - 162)
-                chat_area = session_img.crop((0, chat_top, chat_right, chat_bottom))
+                message_batch = self._latest_messages_from_session(session_img)
 
-                msg_img, is_blue = self._extract_bottom_message(chat_area)
-
-                if msg_img is None:
+                if not message_batch:
                     # 没找到气泡，跳过
                     self._log("INFO", "⏭️ 未找到消息区域，跳过")
                     time.sleep(self.check_interval)
                     continue
 
-                if is_blue:
+                if message_batch[-1][1]:
                     self._log("INFO", "⏭️ 最新消息是AI回复（蓝色气泡），跳过")
                     time.sleep(self.check_interval)
                     continue
 
                 # ═══ 7. OCR 识别底部消息 ═══
-                ocr_text = self._ocr_image(msg_img)
-                if not ocr_text:
-                    self._log("WARN", "⚠️ OCR 未提取到文字，跳过")
+                customer_messages = []
+                for msg_img, _, _ in message_batch:
+                    text = self._ocr_image(msg_img)
+                    if text:
+                        text = self.conversations.clean_customer_content(text)
+                        text = self._normalize_ocr_text(text)
+                        text = self._correct_single_question_mark(text, msg_img)
+                    customer_messages.append(text)
+                if not all(customer_messages):
+                    for attempt in range(1, 3):
+                        self._log("WARN", f"⚠️ OCR 未提取到文字，正在重新截图识别 ({attempt}/2)")
+                        time.sleep(0.8)
+                        retry_session = self._screenshot(col3)
+                        retry_batch = self._latest_messages_from_session(retry_session)
+                        if not retry_batch or retry_batch[-1][1]:
+                            continue
+                        retried = []
+                        for retry_msg, _, _ in retry_batch:
+                            text = self._normalize_ocr_text(
+                                self.conversations.clean_customer_content(self._ocr_image(retry_msg))
+                            )
+                            text = self._correct_single_question_mark(text, retry_msg)
+                            retried.append(text)
+                        if retried and all(retried):
+                            message_batch = retry_batch
+                            customer_messages = retried
+                            self._log("INFO", f"✅ OCR 第 {attempt + 1} 次识别成功")
+                            break
+                if not customer_messages or not all(customer_messages):
+                    self._log("WARN", "⚠️ OCR 连续识别失败，本条消息暂未处理")
                     time.sleep(2)
                     continue
+
+                ocr_text = "\n".join(customer_messages)
 
                 self._log("INFO", f"📝 底部消息OCR ({len(ocr_text)}字符):")
                 for line in ocr_text.split("\n")[:5]:
@@ -1080,12 +1309,16 @@ class WeComAssistant:
                 if self.console_debug_ocr:
                     print(f"\n[最新气泡 OCR]\n{ocr_text}\n", flush=True)
 
-                customer_text = self.conversations.clean_customer_content(ocr_text)
+                customer_text = "\n".join(customer_messages)
 
                 # ═══ 7.5 检测外部联系人标识（OCR文字 + 绿色像素兜底） ═══
+                has_external_label = any(item[2] for item in message_batch)
                 has_external_marker = any(
                     kw and kw in ocr_text for kw in self.external_marker_keywords
                 )
+                if not has_external_marker and has_external_label:
+                    self._log("INFO", "🟢 气泡上方检测到外部联系人标识")
+                    has_external_marker = True
                 if not has_external_marker and self._has_green_badge(msg_img):
                     self._log("INFO", "🟢 绿色像素检测命中外部联系人标识")
                     has_external_marker = True
@@ -1101,31 +1334,37 @@ class WeComAssistant:
                     continue
 
                 self._log("INFO", "🟢 检测到客户消息")
+                if len(customer_messages) > 1:
+                    self._log("INFO", f"📨 本轮合并处理 {len(customer_messages)} 条连续客户消息")
                 print(f"\n[客户消息 | {chat_name}]\n{customer_text}\n", flush=True)
                 if self.memory_enabled:
-                    self.conversations.append(chat_name, "user", customer_text)
-                    self._log("INFO", f"💾 已保存 {chat_name} 的客户消息到本地")
+                    added = self.conversations.append_user_batch_if_new(chat_name, customer_messages)
+                    if added:
+                        self._log("INFO", f"💾 已保存 {chat_name} 的 {len(added)} 条客户消息到本地")
+                    else:
+                        self._log("INFO", "♻️ 复用上次未成功回复的客户消息，不重复保存")
 
                 # ═══ 冷却 ═══
                 now = time.time()
                 last_reply_time = self._last_reply_times.get(chat_name, 0)
                 if now - last_reply_time < self._reply_cooldown:
-                    remain = int(self._reply_cooldown - (now - last_reply_time))
-                    self._log("INFO", f"⏳ 冷却中 (剩余{remain}s)，跳过")
-                    time.sleep(1)
-                    continue
-                self._last_reply_time = now
-                self._last_reply_times[chat_name] = now
-
+                    remain = max(0.0, self._reply_cooldown - (now - last_reply_time))
+                    self._log("INFO", f"⏳ 距上一条回复较近，等待 {remain:.1f}s 后继续处理本条消息")
+                    time.sleep(remain)
                 # ═══ 8. AI 生成回复 ═══
-                reply = self._generate_reply(customer_text, chat_name)
+                reply_package = self._generate_reply(customer_text, chat_name, customer_messages)
 
-                if not reply:
+                if not reply_package:
                     self._log("WARN", "⚠️ 回复生成失败，跳过")
                     time.sleep(2)
                     continue
 
-                self._log("INFO", f"💬 AI 回复: {reply[:80]}...")
+                reply_segments = reply_package["reply_segments"]
+                reply = "\n".join(reply_segments)
+                now = time.time()
+                self._last_reply_time = now
+                self._last_reply_times[chat_name] = now
+                self._log("INFO", f"💬 生成 {len(reply_segments)} 条拟人化回复: {reply[:100]}...")
                 if self.memory_enabled and self.memory_store_ai_replies:
                     self.conversations.append(chat_name, "assistant", reply)
 
@@ -1153,12 +1392,13 @@ class WeComAssistant:
                 self.executor.click(input_x, input_y)
                 time.sleep(0.3)
 
-                # 粘贴 + 回车
-                self.executor.type_text(reply)
-                time.sleep(0.3)
-                self.executor.press_key("enter")
-                time.sleep(0.5)
-                self._log("INFO", "✅ 回复已发送 ✓")
+                # 逐条粘贴并发送，模拟真人客服的聊天节奏。
+                for index, segment in enumerate(reply_segments, 1):
+                    self.executor.type_text(segment)
+                    time.sleep(0.25)
+                    self.executor.press_key("enter")
+                    time.sleep(self.reply_segment_delay if index < len(reply_segments) else 0.5)
+                    self._log("INFO", f"✅ 第 {index}/{len(reply_segments)} 条回复已发送")
 
                 # ═══ 9. 写入智能表格 ═══
                 self._save_to_smart_sheet(ocr_text, reply)

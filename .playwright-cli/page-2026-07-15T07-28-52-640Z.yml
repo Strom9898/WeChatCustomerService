@@ -1,0 +1,74 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: W
+      - generic [ref=e6]:
+        - strong [ref=e7]: 企业微信助手
+        - generic [ref=e8]: 本地管理台
+    - generic [ref=e9]:
+      - paragraph [ref=e10]: 工作区
+      - navigation [ref=e11]:
+        - button "检测配置" [ref=e12] [cursor=pointer]
+        - button "回复策略" [ref=e13] [cursor=pointer]
+        - button "群聊记录" [ref=e14] [cursor=pointer]
+        - button "画面校准" [ref=e15] [cursor=pointer]
+        - button "运行日志" [ref=e16] [cursor=pointer]
+    - generic [ref=e17]: 所有设置仅保存到本机项目目录。网页服务仅监听本机地址。
+  - generic [ref=e18]:
+    - banner [ref=e19]:
+      - generic [ref=e20]: 本地服务 / 管理后台
+      - generic [ref=e21]: 助手未运行
+    - main [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - heading "运行控制台" [level=1] [ref=e27]
+          - paragraph [ref=e28]: 管理群聊检测范围、回复策略和本机自动化进程。
+        - generic [ref=e29]:
+          - button "保存配置" [ref=e30] [cursor=pointer]
+          - button "启动助手" [ref=e31] [cursor=pointer]
+          - button "停止助手" [disabled] [ref=e32]
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - text: 当前监控群
+          - generic [ref=e35]: ai测试群聊2
+        - generic [ref=e36]:
+          - text: 自动发送
+          - generic [ref=e37]: 已开启
+        - generic [ref=e38]:
+          - text: 外部联系人过滤
+          - generic [ref=e39]: 已开启
+        - generic [ref=e40]:
+          - text: 模型密钥
+          - generic [ref=e41]: 已配置
+      - generic [ref=e42]:
+        - generic [ref=e45]:
+          - generic [ref=e47]:
+            - heading "检测范围" [level=2] [ref=e48]
+            - paragraph [ref=e49]: 仅处理指定群里出现的未读外部客户消息。
+          - generic [ref=e51]:
+            - generic [ref=e52]:
+              - text: 检测群聊（每行一个群名）
+              - textbox "检测群聊（每行一个群名） 列表中未显示该群时，本轮不会执行点击。" [ref=e53]:
+                - /placeholder: 例如：ai测试群聊1
+                - text: ai测试群聊2
+              - generic [ref=e54]: 列表中未显示该群时，本轮不会执行点击。
+            - generic [ref=e55]:
+              - text: 检测间隔（秒）
+              - spinbutton "检测间隔（秒）" [ref=e56]: "3"
+            - generic [ref=e57]:
+              - text: 外部联系人标识（每行一个）
+              - textbox "外部联系人标识（每行一个）" [ref=e58]: "@微信 微信"
+        - complementary [ref=e59]:
+          - heading "运行状态" [level=2] [ref=e60]
+          - generic [ref=e61]: 本机助手未运行
+          - paragraph [ref=e64]: 当前未启动。保存配置后点击“启动助手”。
+          - generic [ref=e65]:
+            - generic [ref=e66]:
+              - generic [ref=e67]: "01"
+              - generic [ref=e68]: 先保存配置，再启动助手。
+            - generic [ref=e69]:
+              - generic [ref=e70]: "02"
+              - generic [ref=e71]: 保持企业微信窗口可见，避免被遮挡。
+            - generic [ref=e72]:
+              - generic [ref=e73]: "03"
+              - generic [ref=e74]: 需要排查时，在“画面校准”开启截图。

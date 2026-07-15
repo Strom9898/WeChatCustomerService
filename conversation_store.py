@@ -48,6 +48,37 @@ class ConversationStore:
                 file.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return entry
 
+    def append_user_if_new(self, group_name: str, content: str) -> tuple[dict, bool]:
+        """Append a customer turn unless the same unanswered turn is already last."""
+        cleaned_group = self._clean_group_name(group_name)
+        cleaned_content = self.clean_customer_content(content)[:4000]
+        latest = self.messages(cleaned_group, 1)
+        if (latest and latest[-1].get("role") == "user"
+                and latest[-1].get("content") == cleaned_content):
+            return latest[-1], False
+        return self.append(cleaned_group, "user", cleaned_content), True
+
+    def append_user_batch_if_new(self, group_name: str, contents: list[str]) -> list[dict]:
+        """Append the unseen suffix of a consecutive customer-message batch."""
+        cleaned = [self.clean_customer_content(item)[:4000] for item in contents]
+        cleaned = [item for item in cleaned if item]
+        if not cleaned:
+            return []
+        history = self.messages(group_name, max(20, len(cleaned) * 2))
+        trailing = []
+        for item in reversed(history):
+            if item.get("role") != "user":
+                break
+            trailing.append(item.get("content", ""))
+        trailing.reverse()
+        start = len(trailing) if trailing and cleaned[:len(trailing)] == trailing else 0
+        added = []
+        for content in cleaned[start:]:
+            entry, was_added = self.append_user_if_new(group_name, content)
+            if was_added:
+                added.append(entry)
+        return added
+
     def messages(self, group_name: str, limit: int = 80) -> list[dict]:
         path = self._path_for(group_name)
         if not path.exists():
@@ -109,6 +140,11 @@ class ConversationStore:
                             changed += 1
                         item["content"] = cleaned
                     if item.get("content"):
+                        if (item.get("role") == "user" and rows
+                                and rows[-1].get("role") == "user"
+                                and rows[-1].get("content") == item.get("content")):
+                            changed += 1
+                            continue
                         # This bot emits one assistant reply per customer message. A consecutive
                         # assistant item means the preceding OCR capture was only a sender label.
                         if item.get("role") == "assistant" and rows and rows[-1].get("role") == "assistant":

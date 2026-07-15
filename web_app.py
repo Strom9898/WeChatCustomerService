@@ -16,6 +16,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from conversation_store import ConversationStore
+from legal_service import ArbitrationService
 
 
 ROOT = Path(__file__).resolve().parent
@@ -28,6 +29,7 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("WECOM_WEB_PORT", "8765"))
 LOCK = threading.Lock()
 CONVERSATIONS = ConversationStore(ROOT / "logs" / "conversations")
+ARBITRATION = ArbitrationService(ROOT / "customer_service", ROOT / "logs" / "case_profiles")
 
 
 def read_config():
@@ -132,7 +134,7 @@ def number(value, fallback, minimum, maximum, integer=False):
 
 
 def apply_config_update(config, payload):
-    for key in ("send_enabled", "require_external_marker", "console_debug_ocr", "debug_capture_enabled", "memory_enabled", "memory_store_ai_replies"):
+    for key in ("send_enabled", "require_external_marker", "console_debug_ocr", "debug_capture_enabled", "memory_enabled", "memory_store_ai_replies", "humanized_reply_enabled"):
         if key in payload:
             config[key] = bool(payload[key])
 
@@ -145,6 +147,8 @@ def apply_config_update(config, payload):
     config["chat_area_top_ratio"] = number(payload.get("chat_area_top_ratio"), config.get("chat_area_top_ratio", 0.10), 0, 0.4)
     config["chat_area_bottom_ratio"] = number(payload.get("chat_area_bottom_ratio"), config.get("chat_area_bottom_ratio", 0.77), 0.5, 0.95)
     config["memory_history_limit"] = number(payload.get("memory_history_limit"), config.get("memory_history_limit", 12), 1, 50, True)
+    config["max_reply_segments"] = number(payload.get("max_reply_segments"), config.get("max_reply_segments", 3), 1, 3, True)
+    config["reply_segment_delay_seconds"] = number(payload.get("reply_segment_delay_seconds"), config.get("reply_segment_delay_seconds", 1.1), 0.3, 5.0)
 
     ai = config.setdefault("ai", {})
     incoming_ai = payload.get("ai", {}) if isinstance(payload.get("ai"), dict) else {}
@@ -229,6 +233,11 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not group_name:
                 return self.send_json({"error": "缺少群聊名称"}, HTTPStatus.BAD_REQUEST)
             return self.send_json({"group_name": group_name, "messages": CONVERSATIONS.messages(group_name)})
+        if path == "/api/case-profile":
+            group_name = parse_qs(urlparse(self.path).query).get("group", [""])[0]
+            if not group_name:
+                return self.send_json({"error": "缺少群聊名称"}, HTTPStatus.BAD_REQUEST)
+            return self.send_json({"group_name": group_name, "profile": ARBITRATION.get_profile(group_name)})
         if path == "/":
             self.path = "/index.html"
         return super().do_GET()
